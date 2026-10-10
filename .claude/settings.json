@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "deny": ["Read(./.env)"]
+  },
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true,
+    "filesystem": {
+      "denyRead": ["~/", "~/.ssh", "~/.aws", "./.env"],
+      "allowRead": [".", "~/Downloads/hotel-check-10-skill/hotel-check-10/data"]
+    },
+    "credentials": {
+      "envVars": [
+        { "name": "ANTHROPIC_AUTH_TOKEN", "mode": "deny" }
+      ]
+    }
+  }
+}

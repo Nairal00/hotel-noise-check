@@ -2,26 +2,13 @@
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional, Any
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ToolCallRecord:
-    """Record of a single tool call."""
-    timestamp: str
-    tool_name: str
-    tool_input: Dict[str, Any]
-    tool_use_id: str
-    subagent_type: str
-    parent_tool_use_id: Optional[str] = None
-    tool_output: Optional[Any] = None
-    error: Optional[str] = None
 
 
 @dataclass
@@ -33,17 +20,16 @@ class SubagentSession:
     description: str
     prompt_preview: str
     subagent_id: str  # Unique identifier like "RESEARCHER-1"
-    tool_calls: List[ToolCallRecord] = field(default_factory=list)
 
 
 class SubagentTracker:
     """
-    Tracks all tool calls made by subagents using both hooks and message stream parsing.
+    Tracks all tool calls made by subagents using hooks.
 
     This tracker:
     1. Monitors the message stream to detect subagent spawns via Task tool
     2. Uses hooks (PreToolUse/PostToolUse) to capture all tool invocations
-    3. Associates tool calls with their originating subagent
+    3. Attributes each tool call to its subagent with the hook's agent_id
     4. Logs tool usage to console and transcript files
     """
 
@@ -51,14 +37,13 @@ class SubagentTracker:
         # Map: parent_tool_use_id -> SubagentSession
         self.sessions: Dict[str, SubagentSession] = {}
 
-        # Map: tool_use_id -> ToolCallRecord (for efficient lookup in post hook)
-        self.tool_call_records: Dict[str, ToolCallRecord] = {}
-
-        # Current execution context (from message stream)
-        self._current_parent_id: Optional[str] = None
-
         # Counter for each subagent type to create unique IDs
         self.subagent_counters: Dict[str, int] = defaultdict(int)
+
+        # Map: agent_id from hook input -> label like "HOTEL-CHECKER-1"
+        self.agent_labels: Dict[str, str] = {}
+        # Counter for each subagent type, used only for hook labels
+        self._label_counters: Dict[str, int] = defaultdict(int)
 
         # Transcript writer for logging clean output
         self.transcript_writer = transcript_writer
@@ -112,14 +97,25 @@ class SubagentTracker:
 
         return subagent_id
 
-    def set_current_context(self, parent_tool_use_id: Optional[str]):
+    def _agent_info(self, hook_input: Dict[str, Any]) -> tuple[str, str]:
         """
-        Update the current execution context from message stream.
+        Find out who made the tool call, from the hook input alone.
 
-        Args:
-            parent_tool_use_id: The parent tool use ID from the current message
+        Each new agent_id gets the next number for its type, in the order
+        its first tool call arrives, e.g. "HOTEL-CHECKER-1".
+
+        Returns:
+            (agent_id, agent_type); ("MAIN_AGENT", "lead") for the main agent
         """
-        self._current_parent_id = parent_tool_use_id
+        agent_id = hook_input.get('agent_id')
+        if not agent_id:
+            return "MAIN_AGENT", "lead"
+        agent_type = hook_input.get('agent_type', 'unknown')
+        if agent_id not in self.agent_labels:
+            self._label_counters[agent_type] += 1
+            number = self._label_counters[agent_type]
+            self.agent_labels[agent_id] = f"{agent_type.upper()}-{number}"
+        return self.agent_labels[agent_id], agent_type
 
     def _log_tool_use(self, agent_label: str, tool_name: str, tool_input: Dict[str, Any] = None):
         """
@@ -182,78 +178,40 @@ class SubagentTracker:
         """Hook callback for PreToolUse events - captures tool calls."""
         tool_name = hook_input['tool_name']
         tool_input = hook_input['tool_input']
-        timestamp = datetime.now().isoformat()
+        agent_id, agent_type = self._agent_info(hook_input)
 
-        # Determine agent context
-        is_subagent = self._current_parent_id and self._current_parent_id in self.sessions
+        # Skip main agent spawn calls (handled by spawn message)
+        if agent_id == "MAIN_AGENT" and tool_name in ('Task', 'Agent'):
+            return {'continue_': True}
 
-        if is_subagent:
-            session = self.sessions[self._current_parent_id]
-            agent_id = session.subagent_id
-            agent_type = session.subagent_type
-
-            # Create and store record for subagent
-            record = ToolCallRecord(
-                timestamp=timestamp,
-                tool_name=tool_name,
-                tool_input=tool_input,
-                tool_use_id=tool_use_id,
-                subagent_type=agent_type,
-                parent_tool_use_id=self._current_parent_id
-            )
-            session.tool_calls.append(record)
-            self.tool_call_records[tool_use_id] = record
-
-            # Log
-            self._log_tool_use(agent_id, tool_name, tool_input)
-            self._log_to_jsonl({
-                "event": "tool_call_start",
-                "timestamp": timestamp,
-                "tool_use_id": tool_use_id,
-                "agent_id": agent_id,
-                "agent_type": agent_type,
-                "tool_name": tool_name,
-                "tool_input": tool_input,
-                "parent_tool_use_id": self._current_parent_id
-            })
-        elif tool_name != 'Task':  # Skip Task calls for main agent (handled by spawn message)
-            # Main agent tool call
-            self._log_tool_use("MAIN AGENT", tool_name, tool_input)
-            self._log_to_jsonl({
-                "event": "tool_call_start",
-                "timestamp": timestamp,
-                "tool_use_id": tool_use_id,
-                "agent_id": "MAIN_AGENT",
-                "agent_type": "lead",
-                "tool_name": tool_name,
-                "tool_input": tool_input
-            })
+        label = "MAIN AGENT" if agent_id == "MAIN_AGENT" else agent_id
+        self._log_tool_use(label, tool_name, tool_input)
+        self._log_to_jsonl({
+            "event": "tool_call_start",
+            "timestamp": datetime.now().isoformat(),
+            "tool_use_id": tool_use_id,
+            "agent_id": agent_id,
+            "agent_type": agent_type,
+            "tool_name": tool_name,
+            "tool_input": tool_input
+        })
 
         return {'continue_': True}
 
     async def post_tool_use_hook(self, hook_input, tool_use_id, context):
         """Hook callback for PostToolUse events - captures tool results."""
+        tool_name = hook_input['tool_name']
         tool_response = hook_input.get('tool_response')
-        record = self.tool_call_records.get(tool_use_id)
+        agent_id, agent_type = self._agent_info(hook_input)
 
-        if not record:
+        # Skip main agent spawn calls, same as pre_tool_use_hook
+        if agent_id == "MAIN_AGENT" and tool_name in ('Task', 'Agent'):
             return {'continue_': True}
-
-        # Update record with output
-        record.tool_output = tool_response
 
         # Check for errors
         error = tool_response.get('error') if isinstance(tool_response, dict) else None
         if error:
-            record.error = error
-            session = self.sessions.get(record.parent_tool_use_id)
-            if session:
-                logger.warning(f"[{session.subagent_id}] Tool {record.tool_name} error: {error}")
-
-        # Get agent info for logging
-        session = self.sessions.get(record.parent_tool_use_id)
-        agent_id = session.subagent_id if session else "MAIN_AGENT"
-        agent_type = session.subagent_type if session else "lead"
+            logger.warning("[%s] Tool %s error: %s", agent_id, tool_name, error)
 
         # Log completion to JSONL
         self._log_to_jsonl({
@@ -262,7 +220,7 @@ class SubagentTracker:
             "tool_use_id": tool_use_id,
             "agent_id": agent_id,
             "agent_type": agent_type,
-            "tool_name": record.tool_name,
+            "tool_name": tool_name,
             "success": error is None,
             "error": error,
             "output_size": len(str(tool_response)) if tool_response else 0

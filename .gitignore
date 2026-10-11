@@ -60,3 +60,4 @@ Thumbs.db
 runs/
 smoke_marker.txt
 smoke_marker.txt
+.coverage

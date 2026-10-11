@@ -17,10 +17,6 @@ def process_assistant_message(msg: Any, tracker: Any, transcript: Any) -> None:
     """
     global _tool_just_used
 
-    # Update tracker context with parent_tool_use_id from message
-    parent_id = getattr(msg, 'parent_tool_use_id', None)
-    tracker.set_current_context(parent_id)
-
     for block in msg.content:
         block_type = type(block).__name__
 
@@ -36,7 +32,7 @@ def process_assistant_message(msg: Any, tracker: Any, transcript: Any) -> None:
             _tool_just_used = True
 
             # Only handle Task tool (subagent spawning)
-            if block.name == 'Task':
+            if block.name in ('Task', 'Agent'):
                 subagent_type = block.input.get('subagent_type', 'unknown')
                 description = block.input.get('description', 'no description')
                 prompt = block.input.get('prompt', '')
@@ -50,4 +46,4 @@ def process_assistant_message(msg: Any, tracker: Any, transcript: Any) -> None:
                 )
 
                 # User-facing output with subagent ID
-                transcript.write(f"\n\n[🚀 Spawning {subagent_id}: {description}]\n", end="")
+                transcript.write(f"\n\n[Spawning {subagent_id}: {description}]\n", end="")

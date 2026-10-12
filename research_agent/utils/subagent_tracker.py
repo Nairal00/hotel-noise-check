@@ -174,8 +174,13 @@ class SubagentTracker:
             self.tool_log_file.write(json.dumps(log_entry) + "\n")
             self.tool_log_file.flush()
 
-    async def pre_tool_use_hook(self, hook_input, tool_use_id, context):
-        """Hook callback for PreToolUse events - captures tool calls."""
+    async def pre_tool_use_hook(self, hook_input, tool_use_id, context,
+                                denied=False):
+        """Hook callback for PreToolUse events - captures tool calls.
+
+        denied: True when another hook refused this call. A refused call
+        never reaches any post hook, so this is the only place to log it.
+        """
         tool_name = hook_input['tool_name']
         tool_input = hook_input['tool_input']
         agent_id, agent_type = self._agent_info(hook_input)
@@ -185,9 +190,10 @@ class SubagentTracker:
             return {'continue_': True}
 
         label = "MAIN AGENT" if agent_id == "MAIN_AGENT" else agent_id
-        self._log_tool_use(label, tool_name, tool_input)
+        self._log_tool_use(label, tool_name + (" (denied)" if denied else ""),
+                           tool_input)
         self._log_to_jsonl({
-            "event": "tool_call_start",
+            "event": "tool_call_denied" if denied else "tool_call_start",
             "timestamp": datetime.now().isoformat(),
             "tool_use_id": tool_use_id,
             "agent_id": agent_id,
@@ -196,6 +202,31 @@ class SubagentTracker:
             "tool_input": tool_input
         })
 
+        return {'continue_': True}
+
+    async def post_tool_use_failure_hook(self, hook_input, tool_use_id,
+                                         context):
+        """Hook callback for PostToolUseFailure events.
+
+        Fires instead of PostToolUse when a tool fails, e.g. a hotel tool
+        returns is_error because the AI sent a bad batch.
+        """
+        del context  # required by the SDK, not used here
+        tool_name = hook_input['tool_name']
+        agent_id, agent_type = self._agent_info(hook_input)
+        error = hook_input.get('error')
+        logger.warning("[%s] Tool %s failed: %s", agent_id, tool_name, error)
+        if self.transcript_writer:
+            self.transcript_writer.write_to_file(f"    Failed: {error}\n")
+        self._log_to_jsonl({
+            "event": "tool_call_failed",
+            "timestamp": datetime.now().isoformat(),
+            "tool_use_id": tool_use_id,
+            "agent_id": agent_id,
+            "agent_type": agent_type,
+            "tool_name": tool_name,
+            "error": error
+        })
         return {'continue_': True}
 
     async def post_tool_use_hook(self, hook_input, tool_use_id, context):

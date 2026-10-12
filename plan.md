@@ -302,7 +302,7 @@ Atahotel Linea Uno 跑通：Not suitable for noise-sensitive guests，occurrence
 | 5 | 6 个中间文件；"第几轮读了哪些行"存了 4 遍（todo 的 query_hit、new_hits.csv、judgments 的 round、log 的 hit_rows 等） | 几份记录可能对不上 |
 | 6 | log.csv 存的是指标快照，build_report 用快照下结论 | 最后一轮后又改了判断，结论还是旧的 |
 | 7 | tool_calls.jsonl 不记被 hook 拒绝的命令 | 这次 2 条命令只有开始没有结束，查不出原因 |
-| 8 | 结论对个别判断敏感：改判 2 条（如 495853、495928）就翻成 OK to book。关键词也影响结论：hear、wall 两轮把 unavoidable_rate 从 27% 推到 38%，所以**不要加"提前停止"的规则**，提前停这家就会判成 OK to book | 结论不稳 |
+| 8 | 结论对个别判断敏感：改判 2 条（如 495853、495928）就翻成 OK to book。关键词也影响结论：hear、wall 两轮把 unavoidable_rate 从 27% 推到 38%，所以**不要加"提前停止"的规则**，提前停这家就会判成 OK to book。**2026-10-12 已定：必须跑满 7 轮，不提前停**，由 build_report 强制（见 7.3）。考虑过"unavoidable 达到一定比例就停"：按比例停不安全（后面读到 avoidable 会把比例拉低）；"unavoidable 条数 ≥ 评论总数的 6%"时停是安全的，但后面几轮本来就只读 0～2 条，省不了多少，而且停早的酒店两个比例没法和别家比，所以不加 | 结论不稳 |
 | 9 | 每个脚本是独立程序，数据只能靠文件传；路径、数字靠 AI 在命令里转抄 | 文件多、容易抄错 |
 
 ### 7.3 改动方向：脚本改成 SDK 自定义工具，保留 lead agent
@@ -323,42 +323,50 @@ hotel 必须和 agent.py 选中的酒店名**完全一致**，不一致就报错
 
 | 工具 | 作用 |
 |---|---|
-| next_batch(hotel) | 返回本轮还没判断的下一批（最多 50 条，行号 + 原文）；本轮读完时返回"已读完" + 当前两个指标 |
-| add_judgments(hotel, items) | 存一批判断。先检查：行号属于本轮、没有重复、is_noise 只能 yes/no、category 只能三种之一（no 时必须空），有一条不对整批退回。存完返回下一批 |
-| add_keyword(hotel, word, reasoning) | 先检查上一轮已读完、没满 7 轮；记下本轮关键词和理由；把含新词、还没命中过的差评标为新一轮；返回新增条数和第一批 |
-| build_report(hotel, inference) | 检查全部读完；现算每轮指标和结论；生成 xlsx；写 summary.csv；返回 6 行结果（hotel、verdict、两个指标、rounds、report 路径） |
+| next_batch(hotel) | 返回本轮还没判断的下一批（最多 50 条，行号 + 原文），并告诉 AI 本轮还剩几条没判断（`left`，含这一批）；本轮读完时返回"已读完" + 本轮新读几条、其中几条是噪音。**不返回两个比例**（2026-10-12 已定：跑满 7 轮后 subagent 用不上，看到了反而可能影响后面的判断；比例只在 build_report 算） |
+| add_judgments(hotel, items) | 存一批判断。先检查：行号属于本轮、没有重复、is_noise 只能 yes/no、category 只能三种之一（no 时必须空）、quote 出自原文（见下）、reason 不能是空的，有一条不对整批退回，错误信息写明哪一行哪一句。存完返回下一批 |
+| add_keyword(hotel, word, reasoning) | 先检查上一轮已读完、没满 7 轮；记下本轮关键词和理由；把含新词、还没命中过的差评标为新一轮；返回新增条数和第一批。7 个词都由 subagent 自己选 |
+| build_report(hotel, inference) | 检查第 7 轮已读完（**必须跑满 7 轮**，没跑满就报错退回）；现算每轮指标和结论；生成 xlsx；写 summary.csv；返回 6 行结果（hotel、verdict、两个指标、rounds、report 路径） |
+
+**quote 检查（2026-10-12 已定，写在 add_judgments 函数里，不用 hook）：**
+- quote 是一个列表，每句一项，例如 `["The walls are thin", "non soundproof walls"]`。程序逐句检查，不用切字符串
+- is_noise = yes：列表至少 1 句；is_noise = no：列表必须为空
+- 检查方法：原文和每句 quote 都只做一步整理（转小写、去标点、多个空格合成一个），整理后的每句都要能在整理后的原文里找到。去标点是因为数据里的差评基本没有标点，AI 摘抄时常会加逗号句号
+- 例：原文 `The walls are thin so you can hear others ...`，交 `The walls are thin, so you can hear others.` 通过；交 `the walls were paper thin` 退回
+- xlsx 的 quote 列仍是一格，多句用 ` | ` 连起来显示（只用来显示，程序不再切它）
 
 原来的 4 个脚本对应关系：
 - prepare → agent.py 启动前直接调用
 - add_keyword → add_keyword 工具
-- log_round → 拆掉：漏读检查放进 add_keyword 和 build_report，记录关键词放进 add_keyword，打印指标放进"本轮已读完"的返回值
+- log_round → 拆掉：漏读检查放进 add_keyword 和 build_report，记录关键词放进 add_keyword，本轮条数放进"本轮已读完"的返回值（不含两个比例）
 - build_report → build_report 工具
 - 新增 next_batch、add_judgments，代替 AI 自己写的 Python
 
 **数据存在内存里（每家酒店一份），中间文件全部不要：**
-- reviews：每条评论一行，含 row, round, text, is_noise, category, quote, reason；total = 条数
+- reviews：每条评论一行，含 row, round, text, is_noise, category, quote（列表）, reason；total = 条数
+- **行号**：CSV 里没有行号这一列，按位置算：pandas 给每条评论的编号（从 0 开始）+ 2 = 原数据行号（表头是第 1 行），和 prepare.py 的 `i + 2` 一样。前提已核对：515,739 行 = 1 行表头 + 515,738 条评论，没有跨行的评论。**行号要在筛选之前定下来**：pandas 筛选后保留原编号，不能重新编号（不要用 `reset_index`、`ignore_index=True`）。测试里要核对算出的行号和测试 CSV 的实际行号一致
 - rounds：每轮一行，含 round, keyword, reasoning
 - 输出只剩 xlsx 和 summary.csv。代价：中途出错要重跑这家（logs/ 里仍有过程记录）
 - 所有工具都在同一个程序里按顺序运行，写 summary.csv 不再需要文件锁。但同一城市、不同评分的酒店共用 runs/<城市>/summary.csv，不要同时开两个终端跑同一个城市，否则可能写冲突
 
 **输出格式不变：**
 - xlsx 仍是 4 个工作表，列和现在一样；log 表后 6 列在生成时现算；summary 表加一行 unavoidable_reviews
-- summary.csv 列不变；city、score 由 agent.py 直接填；rounds = 轮数（含第 0 轮）
+- summary.csv 列不变；city、score 直接取文件夹名（runs/<城市>/<评分>/，如 `Milan`、`8.0`），输入小写 `milan` 也和文件夹写法一致；rounds = 轮数（含第 0 轮，跑满 7 轮所以总是 8）
 
 ### 7.4 文件的变化
 | 文件 | 改动 |
 |---|---|
-| .claude/skills/hotel-check-10/（SKILL.md + 4 个脚本） | 不再使用。判断规则（is_noise 定义、分类表、判定规则、inference 要求）搬进 prompts/hotel_checker.txt；脚本逻辑搬进 hotel_tools.py |
-| 分类表 | 补两个例子：听到邻居/别的房间 → ?；交通噪音 + 隔音差 → ?【待你定】 |
-| research_agent/hotel_tools.py | 新增：读 CSV + 准备数据、4 个工具、生成 xlsx 和 summary.csv |
-| select_hotels.py | 合并进 hotel_tools.py，或者保留并由它顺便读出 Negative_Review，保证 CSV 只读一次 |
+| .claude/skills/hotel-check-10/（SKILL.md + 4 个脚本） | 不再使用（2026-10-12 已定：不保留 SKILL.md）。判断规则（is_noise 定义、分类表、判定规则、inference 要求）搬进 prompts/hotel_checker.txt；脚本逻辑搬进 hotel_tools.py |
+| 分类表 | 2026-10-12 已定，用第一次试跑的差评定的。**unavoidable**：原文明确说墙薄、墙不隔音，或换房后仍然吵（495830、495854）；听到隔壁的日常声音（冲马桶、洗手、说话）也算，正常音量都传得过来说明墙薄（495886）。**unclear**：没写噪音来源；只笼统说别的房间吵，可能只是碰上吵闹的客人（495928）；外部噪音 + 隔音差，分不清是墙还是临街窗户（495853）。最后这条是特例，不按"unavoidable > avoidable > unclear"的优先级。avoidable 不变 |
+| research_agent/hotel_tools.py | 新增：接收 select_hotels.py 给的数据存进内存，用核心词 `nois\|wall\|hear\|siren` 标出第 0 轮（add_keyword 用同一套逻辑标第 1～7 轮）。2026-10-12 从 `nois\|thin wall\|siren` 改过来：重跑时 AI 选的 7 个词没有 hear、wall，495830（walls are thin）、495854（non soundproof walls）没被读到；`thin wall` 搜不到 "walls are thin" 这种词序，改搜 `wall`，`hear` 补 "could hear the neighbours" 这类说法。关键词只决定拿哪些给 AI 读，搜宽了只是多读几条（这家多 3 条）；4 个工具；生成 xlsx 和 summary.csv |
+| select_hotels.py | 保留（2026-10-12 已定），CSV 只读一次。读 4 列：`Hotel_Name`、`Hotel_Address`、`Average_Score`（筛酒店）+ `Negative_Review`（准备差评）。筛选规则不变，每家选中的酒店多返回差评数据，交给 hotel_tools.py 存进内存。原 prepare.py 的规则照搬：total 算这家的全部评论（含没写差评的）；差评原文的换行和多余空格变成单个空格；空的、`No Negative` 等算没写差评，不进待读清单（prepare.py 的 6 个值，不分大小写：空、`no negative`、`nothing`、`none`、`n a`、`no complaints`）。这些都是数据清洗；标第 0 轮属于分析，放在 hotel_tools.py。**读 CSV 要加 `keep_default_na=False`**：pandas 默认把空、`NA`、`None`、`N/A`、`null` 读成 NaN（不是文字，合并空格时会报错），加了之后和 prepare.py 用 csv 模块读到的一字不差。副作用：`Average_Score` 只要有一个空格子，整列会读成文字，`"8" == 8.0` 不成立，整个城市悄悄筛不出酒店；所以读完后用 `pd.to_numeric` 转回数字，空格子变 NaN、那一行不算（和改之前一样，有测试）。测试 CSV 里放几条差评是空的、`NA`、`None` 的评论（现有测试 CSV 有空的和 `None`；`NA` 在测试里临时写小 CSV 测）。**没有另加 `total`**：原来返回的 `reviews` 就是全部评论条数（含没写差评的），hotel_tools.py 直接把它当 total（2026-10-12 已写完，16 个测试通过） |
 | prompts/hotel_checker.txt | 重写：判断规则 + 工具的使用顺序（next_batch → add_judgments，重复到本轮读完 → add_keyword 或 build_report）+ 回复格式 |
 | prompts/lead_agent.txt | 只转交酒店名；收齐每家的 6 行结果 |
 | agent.py 的 build_user_prompt | 只给城市、评分、酒店名，不再给各种路径 |
 | agent.py 的 subagent 定义 | tools 只写 4 个工具的全名；去掉 skills |
-| agent.py 的设置 | mcp_servers 挂上工具；tools=["Agent"]，关掉其他自带工具（Bash、Read 等）；allowed_tools 写 Agent + 4 个工具全名（不写的话会走到 can_use_tool 被拒）。注意 tools 只管自带工具，MCP 工具不受影响，lead 仍看得到 4 个工具，拦 lead 靠 hook |
-| hooks | 保留 main_agent_only_delegates（防止 lead 自己调工具）；删掉 confirm_bash、limit_read；记日志的 hook 保留，并加上记录被拒绝的调用；加 PostToolUseFailure hook 记录执行失败的调用 |
-| can_use_tool | 保留"一律拒绝"，作为保险 |
+| agent.py 的设置 | mcp_servers 挂上工具；tools=["Task"]，关掉其他自带工具（Bash、Read 等）。**这里写旧名 Task**（init 的工具列表里它就叫 Task；写 Task 已实测有效）；allowed_tools 照写 Agent + 4 个工具全名（不写的话会走到 can_use_tool 被拒）。注意 tools 只管自带工具，MCP 工具不受影响，lead 仍看得到 4 个工具，拦 lead 靠 hook（已实测：lead 看得到，hook 拦得住） |
+| hooks | 保留 main_agent_only_delegates（防止 lead 自己调工具）；删掉 confirm_bash、limit_read；记日志的 hook 保留，并加上记录被拒绝的调用；加 PostToolUseFailure hook 记录执行失败的调用。已实测：工具返回 is_error 时只触发 PostToolUseFailure，不触发 PostToolUse；被 hook 拒绝的调用只经过 PreToolUse，之后两种 post hook 都不触发，所以"记录被拒绝的调用"要在 PreToolUse 里记 |
+| can_use_tool | 保留"一律拒绝"，作为保险。启动时会打印 CanUseToolShadowedWarning，意思是 Agent 和 4 个工具已写在 allowed_tools 里，不会再问 can_use_tool。这正是想要的，不用管 |
 | env 两个变量 | 保留（前台运行；去掉自带 subagent） |
 | settings.json sandbox | 没有 Bash 后基本用不上，保留不影响 |
 | 第 5 节"Bash 白名单"待定项 | 不再需要 |
@@ -366,7 +374,7 @@ hotel 必须和 agent.py 选中的酒店名**完全一致**，不一致就报错
 
 ### 7.5 先查文档，再做 smoke test
 **查文档**（确定写法，避免 smoke test 写错）：
-- [ ] Subagents 页：subagent 怎么使用自定义工具（tools 里写全名，还是要配合 AgentDefinition.mcpServers）
+- [x] Subagents 页：subagent 怎么使用自定义工具（tools 里写全名，还是要配合 AgentDefinition.mcpServers）→ 见下面"已查（2026-10-12）"
 - [x] Custom Tools 页：@tool、create_sdk_mcp_server 的写法
 
 **已查（2026-10-11）：** Custom Tools 页、Python SDK reference 页、.venv 里装的 SDK（0.2.165）源码
@@ -377,22 +385,32 @@ hotel 必须和 agent.py 选中的酒店名**完全一致**，不一致就报错
 - 文档没有讲怎么测试自定义工具 → 测试写法见 7.4 tests 一行
 - AI 看到的工具名是 mcp__<mcp_servers 里的键名>__<工具名>；allowed_tools 写全名，也可以写 mcp__hotel__* 表示这个服务器的全部工具
 - tools 选项只管自带工具，文档原话 "MCP tools are unaffected"
-- AgentDefinition 有 mcpServers 字段（驼峰写法），tools 写允许的工具名。两者怎么配合文档没写清楚，靠 smoke test 确认
-- tool search 默认开启，自定义工具默认延迟加载：AI 一开始只看到工具名，用到时再加载参数说明
 - 有 PostToolUseFailure hook（工具执行失败时触发），可以补 7.2 第 7 条
 
-**smoke test**（1 个简单工具、1 个 subagent，用 DeepSeek 跑一次），确认 6 件事：
-1. subagent 能调用自定义工具
-2. 两次调用之间，工具存在内存里的数据还在
-3. tools=["Agent"] 后，lead 和 subagent 都没有 Bash、Read
-4. lead 自己调用自定义工具时，被 hook 拒绝
-5. allowed_tools 写了全名后，工具调用不会走到 can_use_tool 被拒
-6. subagent 只有 4 个自定义工具时，能正常加载工具的参数说明（因为 tool search 延迟加载）；不行再查怎么关掉 tool search
+**已查（2026-10-12）：** Subagents 页（SDK 和 Claude Code 两页）、Tool search 页、Extend Claude Code 页
+- subagent 默认继承主会话的 MCP 工具；但 AgentDefinition.tools 只要写了列表，就只留列出来的，MCP 工具也一样。所以 4 个工具全名（或 mcp__hotel__*）必须写进 tools
+- AgentDefinition.mcpServers 是给"主会话里没有的服务器"用的。进程内的 SDK 服务器能不能写进去，文档没说 → 不用它，工具挂在主会话的 mcp_servers，靠 hook 拦 lead
+- tool search：上面 2026-10-11 写的"默认开启、延迟加载"**对我们不成立**。文档说 ANTHROPIC_BASE_URL 指向非 Anthropic 官方地址时，SDK 会关掉 tool search。用 DeepSeek 时，4 个工具的参数说明一开始就全部加载（smoke test 已证实）
+- Python 的 @tool 只把 content 和 is_error 交给 AI，structuredContent 用不了。返回文字即可，不影响
+- 后台运行的 subagent 也保留全部 MCP 工具；CLAUDE_CODE_DISABLE_BACKGROUND_TASKS 照样保留，用来保证一家跑完再下一家
+- Extend Claude Code 页的 "MCP vs Skill" 对比把 MCP 定位为连外部服务。我们用的是 SDK 自定义工具，只是借 MCP 的格式；依据是 Custom Tools 页（可以用来放自己程序里的处理逻辑）
+
+**smoke test（2026-10-12，`smoke_test_mcp.py`，全部通过，跑完已删）**：1 个工具 add_note(hotel, note)、1 个 subagent，设置和 7.4 一样，用 DeepSeek 跑一次。结果由 Python 根据 hook 记录和内存数据核对，不靠 AI 自述：
+- [x] 1. subagent 能调用自定义工具
+- [x] 2. 两次调用之间，内存里的数据还在（正好是 `['first', 'second']`，lead 那次被拒没存进去）
+- [x] 3. tools=["Task"] 后，lead 和 subagent 都没有 Bash、Read。init 的工具列表只有 `Task`、`mcp__smoke__add_note`。**tools 里要写 `Task`，不是 `Agent`**
+- [x] 4. lead 自己调用自定义工具时，被 hook 拒绝；拒绝理由作为工具结果交回 lead，lead 照常往下走
+- [x] 5. allowed_tools 写了全名后，工具调用没有走到 can_use_tool
+- [x] 6. 不需要了：init 的工具列表里没有 ToolSearch，subagent 第一次就直接调用成功（tool search 是关的，见上）
+- [x] 7.（加测）酒店名不对时返回 is_error，AI 收到错误后继续往下走；触发的是 PostToolUseFailure，不是 PostToolUse
+- [x] 8.（加测）主 agent 等 subagent 跑完才继续，整个运行以 success 结束
+
+**还没测**：工具只有两个文字参数。add_judgments 的 items 是"一组对象"，category 还限定三个值，每个对象里的 quote 又是一个列表，DeepSeek 能不能按这种格式填没测过。不单独测，重跑 Atahotel Linea Uno 时看第一批：格式不对工具会报错退回，能马上看出来。
 
 ### 7.6 步骤
-1. 查文档 + smoke test（7.5）
+1. 查文档 + smoke test（7.5）—— 2026-10-12 完成，全部通过
 2. 通过 → 按 7.3、7.4 改，补测试
-3. 重跑 Atahotel Linea Uno，和这次的结果对比
+3. 重跑 Atahotel Linea Uno，和这次的结果对比。注意：按新分类表，495853、495928 改成 unclear，unavoidable 只剩 3 条（495830、495854、495886），3/13 = 23%，预计结论变成 OK to book；如果 subagent 判出别的结果，先看是不是规则没写清楚
 4. 不通过 → 备选方案：保留 Bash + 脚本，但要
    - 新增 add_judgments.py（检查格式后写入）
    - build_report.py 自己写 summary.csv

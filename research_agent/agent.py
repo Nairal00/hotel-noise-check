@@ -16,6 +16,12 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import PermissionResultDeny
 from dotenv import load_dotenv
 
+from research_agent.hotel_tools import (
+    SERVER_NAME,
+    TOOL_NAMES,
+    create_server,
+    load_hotels,
+)
 from research_agent.select_hotels import select_hotels
 from research_agent.utils.message_handler import process_assistant_message
 from research_agent.utils.subagent_tracker import SubagentTracker
@@ -28,7 +34,6 @@ load_dotenv()
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 # 项目根目录：本文件在 research_agent/ 里，上一级就是 research-agent/
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-SKILL_DIR = PROJECT_DIR / ".claude" / "skills" / "hotel-check-10"
 
 
 def load_prompt(filename: str) -> str:
@@ -60,12 +65,12 @@ def check_api_key() -> None:
                  "Get your key at: https://platform.deepseek.com\n")
 
 
-def filter_hotels(args: argparse.Namespace) -> tuple[Path, list[dict]]:
-    """检查 CSV，按城市、评分、评论数筛出要查的酒店。不花钱。
+def filter_hotels(args: argparse.Namespace) -> list[dict]:
+    """检查 CSV，按城市、评分、评论数筛出要查的酒店，连同差评一起返回。不花钱。
 
-    返回 (CSV 完整路径, 要查的酒店列表)；出问题就打印原因并退出。
+    出问题就打印原因并退出。
     """
-    # 把 --csv 变成完整路径，后面切换文件夹、交给 subagent 都不会找错
+    # 把 --csv 变成完整路径，后面切换文件夹也不会找错
     csv_path = Path(args.csv).resolve()
     if not csv_path.is_file():
         sys.exit(f"Error: CSV not found: {csv_path}")
@@ -77,37 +82,30 @@ def filter_hotels(args: argparse.Namespace) -> tuple[Path, list[dict]]:
     print(f"\nHotels to check: {len(hotels)}")
     for h in hotels:
         print(f"  - {h['hotel']} ({h['reviews']} reviews)")
-    return csv_path, hotels
+    return hotels
 
 
-def build_user_prompt(args: argparse.Namespace, csv_path: Path,
-               hotels: list[dict]) -> str:
-    """把要查的酒店和所需路径拼成一段文字，发给主 agent。"""
+def build_user_prompt(args: argparse.Namespace, hotels: list[dict]) -> str:
+    """把城市、评分和要查的酒店名拼成一段文字，发给主 agent。路径都不用给。"""
     lines = [
         f"Check these {len(hotels)} hotel(s) with the hotel-checker agent.",
         f"City: {args.city}",
         f"Score: {args.score:.1f}",
-        f"CSV: {csv_path}",
-        f"Skill dir: {SKILL_DIR}",
-        f"Python: {sys.executable}",
     ]
     for i, h in enumerate(hotels, 1):
         lines.append(f"Hotel {i}: {h['hotel']}")
-        lines.append(f"  Work dir: {h['work_dir']}")
     return "\n".join(lines)
 
 
 def build_agents() -> dict[str, AgentDefinition]:
-    """定义唯一的 subagent：hotel-checker，一次查一家酒店。"""
+    """定义唯一的 subagent：hotel-checker，一次查一家酒店，只能用 4 个工具。"""
     return {
         "hotel-checker": AgentDefinition(
             description=(
-                "Checks ONE hotel for noise-sensitive guests with the "
-                "hotel-check-10 skill. Give it the hotel name, work dir, "
-                "CSV path, skill dir, Python path, city and score."
+                "Checks ONE hotel for noise-sensitive guests. "
+                "Give it the hotel name, copied exactly."
             ),
-            tools=["Skill", "Bash", "Read"],
-            skills=["hotel-check-10"],
+            tools=TOOL_NAMES,
             prompt=load_prompt("hotel_checker.txt"),
             model="sonnet",
         ),
@@ -136,37 +134,21 @@ async def main_agent_only_delegates(input_data: dict, tool_use_id: str | None,
                 "The main agent may only delegate with the Agent tool.")
 
 
-async def confirm_bash(input_data: dict, tool_use_id: str | None,
-                       context: Any) -> dict:
-    """hook：subagent 每条 Bash 命令先在终端打印，等你输入 y 才放行。"""
-    del tool_use_id, context  # SDK 规定要有这两个参数，这里用不到
-    # 不是 Bash，或者是主 agent 用的（已经被另一个 hook 拒绝）→ 不管
-    if input_data["tool_name"] != "Bash" or not input_data.get("agent_id"):
-        return {}
-    command = input_data["tool_input"].get("command", "")
-    print(f"\n[Bash] {command}")
-    if input("Allow? (y/n): ").strip().lower() == "y":
-        return {}
-    return deny(input_data, "The user denied this command.")
+def make_pre_tool_use(tracker: SubagentTracker) -> Callable:
+    """生成 PreToolUse hook：先用 main_agent_only_delegates 判断，再记日志。
 
+    被拒绝的调用之后不会触发任何 post hook（已实测），所以拒绝要在这里记下。
+    """
+    async def pre_tool_use(input_data: dict, tool_use_id: str | None,
+                           context: Any) -> dict:
+        """hook：判断放行还是拒绝，把结果一起记进日志。"""
+        result = await main_agent_only_delegates(input_data, tool_use_id,
+                                                 context)
+        await tracker.pre_tool_use_hook(input_data, tool_use_id, context,
+                                        denied=bool(result))
+        return result
 
-def make_limit_read(csv_dir: Path) -> Callable:
-    """生成 limit_read hook：subagent 只能用 Read 读项目文件夹和 CSV 所在文件夹。"""
-    allowed = [PROJECT_DIR, csv_dir]
-
-    async def limit_read(input_data: dict, tool_use_id: str | None,
-                         context: Any) -> dict:
-        """hook：Read 的路径不在允许的文件夹里就拒绝。"""
-        del tool_use_id, context  # SDK 规定要有这两个参数，这里用不到
-        if input_data["tool_name"] != "Read" or not input_data.get("agent_id"):
-            return {}
-        path = Path(input_data["tool_input"].get("file_path", "")).resolve()
-        if any(path.is_relative_to(folder) for folder in allowed):
-            return {}
-        return deny(input_data, f"Reading outside the project and CSV folder "
-                                f"is not allowed: {path}")
-
-    return limit_read
+    return pre_tool_use
 
 
 async def deny_all_requests(tool_name: str, input_data: dict,
@@ -177,25 +159,27 @@ async def deny_all_requests(tool_name: str, input_data: dict,
     return PermissionResultDeny(message=f"{tool_name} is not allowed in this run.")
 
 
-def build_claude_options(tracker: SubagentTracker,
-                         csv_dir: Path) -> ClaudeAgentOptions:
+def build_claude_options(tracker: SubagentTracker) -> ClaudeAgentOptions:
     """组装 Claude 的设置单：模型、工具、subagent、hook、权限、环境变量。"""
     hooks = {
-        # 超时 600 秒 = 10 分钟：试跑时等你输入 y/n，默认 60 秒太短
-        "PreToolUse": [HookMatcher(timeout=600, hooks=[
-            main_agent_only_delegates,
-            confirm_bash,
-            make_limit_read(csv_dir),
-            tracker.pre_tool_use_hook,
-        ])],
+        "PreToolUse": [HookMatcher(hooks=[make_pre_tool_use(tracker)])],
         "PostToolUse": [HookMatcher(hooks=[tracker.post_tool_use_hook])],
+        # 工具返回 is_error 时只触发这个，不触发 PostToolUse（已实测）
+        "PostToolUseFailure": [HookMatcher(
+            hooks=[tracker.post_tool_use_failure_hook])],
     }
     return ClaudeAgentOptions(
         cwd=str(PROJECT_DIR),
         setting_sources=["project"],
         system_prompt=load_prompt("lead_agent.txt"),
         model="haiku",
-        allowed_tools=["Agent"],
+        # 只管自带工具：只留派活的工具，Bash、Read 等都去掉。
+        # 这里要写旧名 Task（init 的工具列表里它叫 Task，已实测）
+        tools=["Task"],
+        # 不用问就放行：派活 + 4 个酒店工具。MCP 工具不受 tools 影响，
+        # lead 也看得到它们，拦 lead 靠 main_agent_only_delegates
+        allowed_tools=["Agent", *TOOL_NAMES],
+        mcp_servers={SERVER_NAME: create_server()},
         agents=build_agents(),
         hooks=hooks,
         permission_mode="default",
@@ -222,10 +206,11 @@ async def run_claude(task: str, options: ClaudeAgentOptions,
 
 
 def main() -> None:
-    """按顺序：读参数 → 检查 key → 筛酒店 → 切到项目根目录 → 启动 Claude 跑一次。"""
+    """按顺序：读参数 → 检查 key → 筛酒店、存进内存 → 切到项目根目录 → 启动 Claude 跑一次。"""
     args = parse_args()
     check_api_key()
-    csv_path, hotels = filter_hotels(args)
+    hotels = filter_hotels(args)
+    load_hotels(hotels)
     # 必须在 filter_hotels 之后：它要先把相对路径换成完整路径
     os.chdir(PROJECT_DIR)
 
@@ -234,8 +219,8 @@ def main() -> None:
     tracker = SubagentTracker(transcript_writer=transcript,
                               session_dir=session_dir)
     try:
-        asyncio.run(run_claude(build_user_prompt(args, csv_path, hotels),
-                               build_claude_options(tracker, csv_path.parent),
+        asyncio.run(run_claude(build_user_prompt(args, hotels),
+                               build_claude_options(tracker),
                                tracker, transcript))
     finally:
         transcript.close()

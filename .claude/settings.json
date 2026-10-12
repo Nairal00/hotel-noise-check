@@ -8,7 +8,7 @@
     "failIfUnavailable": true,
     "filesystem": {
       "denyRead": ["~/", "~/.ssh", "~/.aws", "./.env"],
-      "allowRead": [".", "~/Downloads/hotel-check-10-skill/hotel-check-10/data"]
+      "allowRead": [".", "~/Downloads/hotel-noise-check/hotel-check-10/data"]
     },
     "credentials": {
       "envVars": [

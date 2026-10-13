@@ -45,11 +45,7 @@ def load_prompt(filename: str) -> str:
 
 def positive_int(text: str) -> int:
     """argparse 的 type 函数：把文字转成整数，必须 >= 1，否则报错退出。
-
-    例子："3" -> 3；"0"、"-1"、"1.5"、"abc" 都不行。
-    不挡的话，pandas 的 head(-1) 会选出几乎所有酒店，全派给 DeepSeek 花钱。
     """
-    # 抛 ArgumentTypeError，argparse 会原样显示这句话，用户看得懂
     try:
         number = int(text)
     except ValueError:
@@ -83,8 +79,7 @@ def check_api_key() -> None:
 
 
 def filter_hotels(args: argparse.Namespace) -> list[dict]:
-    """检查 CSV，按城市、评分、评论数筛出要查的酒店，连同差评一起返回。不花钱。
-
+    """检查 CSV，按城市、评分、评论数筛出要查的酒店，连同差评一起返回。
     出问题就打印原因并退出。
     """
     # 把 --csv 变成完整路径，后面切换文件夹也不会找错
@@ -153,7 +148,6 @@ async def main_agent_only_delegates(input_data: dict, tool_use_id: str | None,
 
 def make_pre_tool_use(tracker: SubagentTracker) -> Callable:
     """生成 PreToolUse hook：先用 main_agent_only_delegates 判断，再记日志。
-
     被拒绝的调用之后不会触发任何 post hook（已实测），所以拒绝要在这里记下。
     """
     async def pre_tool_use(input_data: dict, tool_use_id: str | None,

@@ -194,3 +194,6 @@ hooks = {
 {"event":"tool_call_start","agent_id":"HOTEL-CHECKER-1","agent_type":"hotel-checker","tool_name":"mcp__hotel__next_batch",...}
 {"event":"tool_call_complete","agent_id":"HOTEL-CHECKER-1","tool_name":"mcp__hotel__next_batch","success":true,"output_size":1470,...}
 ```
+
+## Credits
+This project is adapted from the [research-agent demo](https://github.com/anthropics/claude-agent-sdk-demos/tree/main/research-agent) in Anthropic's `claude-agent-sdk-demos` (MIT License).

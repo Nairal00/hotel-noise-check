@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from research_agent.select_hotels import (
+from hotel_checker_agent.select_hotels import (
     EMPTY,
     RUNS_DIR,
     folder_name,
@@ -141,10 +141,10 @@ class TestComplaints(unittest.TestCase):
                 self.assertEqual(c["text"], clean(c["text"]))
 
 
-def select_tiny(rows):
-    """临时写一个小 CSV 再筛 Milan、8.0；测完临时文件夹自动删除。
+def select_tiny(rows, address=ADDRESS, city="Milan"):
+    """临时写一个小 CSV 再筛 city、8.0；测完临时文件夹自动删除。
 
-    rows 的每一项是 (评分, 差评)，酒店都是 Tiny Inn。
+    rows 的每一项是 (评分, 差评)，酒店都是 Tiny Inn，地址都是 address。
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "tiny.csv"
@@ -153,8 +153,8 @@ def select_tiny(rows):
             writer.writerow(["Hotel_Name", "Hotel_Address",
                              "Average_Score", "Negative_Review"])
             for score, review in rows:
-                writer.writerow(["Tiny Inn", ADDRESS, score, review])
-        return select_hotels(path, "Milan", 8.0, 1, 1)
+                writer.writerow(["Tiny Inn", address, score, review])
+        return select_hotels(path, city, 8.0, 1, 1)
 
 
 class TestTinyCsv(unittest.TestCase):
@@ -174,6 +174,15 @@ class TestTinyCsv(unittest.TestCase):
         hotel = select_tiny([("8", "noisy"), ("", "loud")])[0]
         self.assertEqual(hotel["reviews"], 1)
         self.assertEqual(hotel["complaints"], [{"row": 2, "text": "noisy"}])
+
+    def test_uk_address_city_before_postcode(self):
+        """英国地址：城市取邮编前的 London，不是倒数第二个词 United。"""
+        hotel = select_tiny(
+            [("8", "noisy")],
+            address="1 Templeton Place London SW5 9NB United Kingdom",
+            city="London")[0]
+        expected = RUNS_DIR / "London" / "8.0" / "Tiny_Inn"
+        self.assertEqual(hotel["work_dir"], str(expected))
 
 
 if __name__ == "__main__":

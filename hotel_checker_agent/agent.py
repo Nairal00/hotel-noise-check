@@ -16,23 +16,23 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import PermissionResultDeny
 from dotenv import load_dotenv
 
-from research_agent.utils.hotel_tools import (
+from hotel_checker_agent.utils.hotel_tools import (
     SERVER_NAME,
     TOOL_NAMES,
     create_server,
     load_hotels,
 )
-from research_agent.select_hotels import select_hotels
-from research_agent.utils.message_handler import process_assistant_message
-from research_agent.utils.subagent_tracker import SubagentTracker
-from research_agent.utils.transcript import setup_session, TranscriptWriter
+from hotel_checker_agent.select_hotels import select_hotels
+from hotel_checker_agent.utils.message_handler import process_assistant_message
+from hotel_checker_agent.utils.subagent_tracker import SubagentTracker
+from hotel_checker_agent.utils.transcript import setup_session, TranscriptWriter
 
 # Load environment variables
 load_dotenv()
 
 # Paths to prompt files
 PROMPTS_DIR = Path(__file__).parent / "prompts"
-# 项目根目录：本文件在 research_agent/ 里，上一级就是 research-agent/
+# 项目根目录：本文件在 hotel_checker_agent/ 里，上一级就是 hotel_noise_check_python/
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -41,6 +41,23 @@ def load_prompt(filename: str) -> str:
     prompt_path = PROMPTS_DIR / filename
     with open(prompt_path, "r", encoding="utf-8") as f:
         return f.read().strip()
+
+
+def positive_int(text: str) -> int:
+    """argparse 的 type 函数：把文字转成整数，必须 >= 1，否则报错退出。
+
+    例子："3" -> 3；"0"、"-1"、"1.5"、"abc" 都不行。
+    不挡的话，pandas 的 head(-1) 会选出几乎所有酒店，全派给 DeepSeek 花钱。
+    """
+    # 抛 ArgumentTypeError，argparse 会原样显示这句话，用户看得懂
+    try:
+        number = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"must be a whole number, got {text!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {number}")
+    return number
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,8 +69,8 @@ def parse_args() -> argparse.Namespace:
                         help="Average_Score 正好等于这个值，例如 8.0")
     parser.add_argument("--min-reviews", type=int, required=True,
                         help="这家酒店在 CSV 里至少有几行评论")
-    parser.add_argument("--max-hotels", type=int, default=1,
-                        help="最多查几家，默认 1")
+    parser.add_argument("--max-hotels", type=positive_int, default=1,
+                        help="最多查几家，至少 1，默认 1")
     return parser.parse_args()
 
 

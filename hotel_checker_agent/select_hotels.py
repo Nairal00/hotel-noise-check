@@ -12,7 +12,7 @@ import pandas as pd  # 用 pandas 读 CSV
 COLUMNS = ["Hotel_Name", "Hotel_Address", "Average_Score", "Negative_Review"]
 # 视为"没写差评"的内容（比较前已转小写），和 prepare.py 一样
 EMPTY = {"", "no negative", "nothing", "none", "n a", "no complaints"}
-# 报告都放在 research-agent/runs/ 下；本文件在 research_agent/ 里，项目根目录是上一级
+# 报告都放在 hotel_noise_check_python/runs/ 下；本文件在 hotel_checker_agent/ 里，项目根目录是上一级
 RUNS_DIR = Path(__file__).resolve().parent.parent / "runs"
 
 
@@ -60,8 +60,11 @@ def select_hotels(csv_path, city, score, min_reviews, max_hotels):
     df = df.assign(Average_Score=pd.to_numeric(df["Average_Score"]))
 
     # 地址里倒数第二个词是城市名，例如 "... 20123 Milan Italy" 中的 "Milan"
-    # 注意：英国地址以 "United Kingdom" 结尾，这样会取到 "United"，本项目不处理英国
-    df = df.assign(city=df["Hotel_Address"].str.split().str[-2])
+    # 英国地址例外："... London SW5 9NB United Kingdom"，邮编和国名各两个词，
+    # 城市是倒数第五个词
+    words = df["Hotel_Address"].str.split()
+    is_uk = words.str[-1] == "Kingdom"
+    df = df.assign(city=words.str[-5].where(is_uk, words.str[-2]))
     # 忽略大小写比较城市名，只留这个城市的行
     df = df[df["city"].str.lower() == city.lower()]
     # 评分正好等于 score；CSV 里存的是 8，读进来是数字 8.0，可以直接比较

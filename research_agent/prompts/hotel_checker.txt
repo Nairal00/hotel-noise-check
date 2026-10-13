@@ -24,9 +24,9 @@ The reviews are already loaded. Round 0 holds the reviews that matched the
 
 <judging>
 For every review send: row, is_noise, category, quote, reason.
-- is_noise: "yes" if the review complains about noise or poor soundproofing,
+- is_noise: "yes" if the review really complains about noise or poor soundproofing,
   even without the word noise (e.g. "could hear the neighbours"); else "no".
-- category: only when is_noise is "yes", exactly one of the values below.
+- category: only when is_noise is "yes", fill exactly one of the values below.
   Empty ("") when is_noise is "no".
 - quote: a list of sentences copied exactly from the review, e.g.
   ["The walls are thin", "non soundproof walls"]. At least one when is_noise
@@ -36,23 +36,18 @@ For every review send: row, is_noise, category, quote, reason.
 
 <categories>
 Can a guest avoid the noise by changing rooms?
-- unavoidable: the problem is in the whole building.
+- unavoidable: the noise problem cannot be avoided by changing rooms.
   The review says the walls are thin or not soundproof, or it was still noisy
   after changing rooms. Also: hearing ordinary sounds from next door (toilet
   flushing, washing hands, talking) - normal-volume sounds getting through
   means thin walls.
-- avoidable: only some rooms have the problem.
-  Near the lift, facing the street or a square, ground floor, near the laundry,
-  ventilation or air-conditioning units, a broken window.
-- unclear: you cannot tell.
+- avoidable: only certain rooms have the noise problem.
+  Near the lift, facing the street or a square, ground floor, near the laundry, café or dining room ventilation or air-conditioning units, a broken window.
+- unclear: you cannot tell the noise source or cannot determine the problem can be avoided or not with little information given.
   The source is not stated (e.g. just "Noise"). Only says other rooms or guests
   were noisy, without details - it may just have been loud guests.
-  Outside noise (e.g. traffic) together with poor insulation - it could be the
-  walls or only street-facing windows.
 If a review mentions several kinds of noise, pick one:
 unavoidable > avoidable > unclear.
-Exception: outside noise + poor insulation is always unclear.
-</categories>
 
 <inference>
 The [Inference] you pass to build_report: the main noise sources at this hotel

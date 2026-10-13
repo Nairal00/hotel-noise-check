@@ -1,9 +1,6 @@
 """筛出要查的酒店：某城市、评分正好等于某值、评论数达到门槛。
 
 同时给出每家选中酒店写了差评的评论，CSV 只读一次。
-由 agent.py 在启动 Claude 之前调用，不花钱。
-从 donor code hotel-check-10/scripts/list_hotels.py 改过来；
-差评的清洗规则照搬原 skill 的 prepare.py。
 """
 
 import re  # 正则表达式，用来把特殊字符换成 _

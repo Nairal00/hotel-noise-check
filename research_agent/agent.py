@@ -16,7 +16,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import PermissionResultDeny
 from dotenv import load_dotenv
 
-from research_agent.hotel_tools import (
+from research_agent.utils.hotel_tools import (
     SERVER_NAME,
     TOOL_NAMES,
     create_server,
